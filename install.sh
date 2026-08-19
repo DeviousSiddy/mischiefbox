@@ -133,8 +133,13 @@ cp "$SCRIPT_DIR/gitea/docker-compose.yml" "$INSTALL_DIR/gitea/"
 # Install documentation
 info "Installing documentation..."
 mkdir -p "$INSTALL_DIR/docs"
-cp "$SCRIPT_DIR/docs/"*.md "$INSTALL_DIR/docs/" 2>/dev/null || true
-chown -R "$MB_USER:$MB_USER" "$INSTALL_DIR/docs"
+if [[ -d "$SCRIPT_DIR/docs" ]]; then
+    cp "$SCRIPT_DIR/docs/"*.md "$INSTALL_DIR/docs/"
+    chown -R "$MB_USER:$MB_USER" "$INSTALL_DIR/docs"
+    info "Documentation installed to $INSTALL_DIR/docs/"
+else
+    warn "No docs/ directory found in installer — MCP resources will not be available"
+fi
 
 # Set permissions
 chown -R "$MB_USER:$MB_USER" "$INSTALL_DIR"
