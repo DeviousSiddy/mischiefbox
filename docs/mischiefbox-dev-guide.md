@@ -363,3 +363,112 @@ from any MCP client (e.g. Bunny Hole / agents).
 - Errors: standard JSON-RPC codes — `-32700` parse, `-32600` invalid request,
   `-32601` method not found, `-32602` invalid params (unknown tool / missing or
   invalid input), `-32603` internal.
+
+## 12. Development pitfalls
+
+### 12.1 Windows SSH key permissions
+
+When mounting SSH keys from Windows (`C:\Users\...\.ssh`) into Linux containers, the
+mount preserves Windows permissions (0777). SSH refuses to use keys with lax permissions:
+
+```
+Permissions 0777 for '/root/.ssh/id_ed25519' are too open.
+```
+
+**Fix:** Copy the key to a writable location inside the container and chmod it:
+
+```bash
+mkdir -p /tmp/.ssh
+cp /root/.ssh/id_ed25519 /tmp/.ssh/id_ed25519
+chmod 600 /tmp/.ssh/id_ed25519
+SSH_OPTS="${SSH_OPTS} -i /tmp/.ssh/id_ed25519"
+```
+
+This works even with `:ro` mounts since you're copying, not modifying in place.
+
+### 12.2 Input mapping requires `env`
+
+Inputs declared in `tool.toml` are **not** automatically passed to the container. The
+runner only forwards inputs that have an `env` mapping:
+
+```toml
+# WRONG — input is validated but never reaches the container
+[run.inputs]
+user_id = { type = "int", description = "User ID" }
+
+# CORRECT — input is passed as USER_ID environment variable
+[run.inputs]
+user_id = { type = "int", env = "USER_ID", description = "User ID" }
+```
+
+Without `env`, the script sees an empty variable and fails silently or with a confusing
+error. The `flag` and `positional` mappings work differently — `flag` adds CLI args
+after the command, `positional` adds bare values in declaration order.
+
+### 12.3 Python quoting in SSH commands
+
+Embedding Python code with single quotes in SSH remote commands breaks the shell:
+
+```bash
+# BROKEN — Python's single quotes conflict with shell quoting
+ssh host "python3 -c 'import sys; print(sys.argv[1])'"
+
+# WORKING — use heredoc to pass script as stdin
+ssh host bash <<'REMOTE_EOF'
+python3 <<'PYEOF'
+import sys
+print(sys.argv[1])
+PYEOF
+REMOTE_EOF
+```
+
+For complex scripts, write to a temp file first:
+
+```bash
+ssh host "cat > /tmp/script.py" <<'PYEOF'
+import sys
+# ... complex code with mixed quotes ...
+PYEOF
+ssh host "python3 /tmp/script.py arg1 arg2"
+```
+
+### 12.4 Remote services may run in containers
+
+When SSHing to a server, the target service might be in a Docker container. You can't
+run commands directly — you need `docker exec`:
+
+```bash
+# BROKEN — Odoo isn't installed on the host
+ssh root@server "python3 -c 'import odoo'"
+
+# WORKING — execute inside the container
+ssh root@server "docker exec main-odoo-web-1 python3 -c 'import odoo'"
+```
+
+Check with `docker ps` on the remote host to find the container name.
+
+### 12.5 Alpine SSH first-connection warnings
+
+Alpine containers don't have a known_hosts file by default. First SSH connections
+trigger a host key warning. Add these options to suppress it in tool scripts:
+
+```bash
+SSH_OPTS="-o ConnectTimeout=20 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null"
+```
+
+For production tools, consider pinning the host key via mount instead of disabling
+verification.
+
+### 12.6 READ-ONLY mounts prevent chmod
+
+You cannot `chmod` files on a read-only mount (`:ro`). If you need to fix permissions
+(e.g. SSH keys from Windows), copy the file to a writable location first:
+
+```bash
+# This fails on :ro mounts
+chmod 600 /root/.ssh/id_ed25519  # Permission denied
+
+# This works — copy then chmod
+cp /root/.ssh/id_ed25519 /tmp/.ssh/id_ed25519
+chmod 600 /tmp/.ssh/id_ed25519
+```
