@@ -1,0 +1,150 @@
+#!/usr/bin/env python3
+"""MischiefBox HTTP API (V0.3). Stdlib only.
+
+Endpoints:
+  GET  /tools                    list tools
+  GET  /tools/{name}             describe a tool (input/output schema)
+  POST /tools/{name}/run         run a tool   body: {"args": [...], "print": bool}
+  POST /tools/{name}/install     pull the tool image
+  GET  /pipelines                list pipelines
+  POST /pipelines/{name}/run     run a pipeline  body: {"args": [...], "print": bool}
+
+Security: binds localhost by default. Tools have real host access, so this
+must not be exposed to the internet without auth.
+"""
+import json
+import os
+import subprocess
+import sys
+import urllib.parse
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+import mischiefboxlib as mb
+
+HOST = os.environ.get("MB_API_HOST", "127.0.0.1")
+PORT = int(os.environ.get("MB_API_PORT", "8731"))
+
+
+def json_body(req):
+    try:
+        n = int(req.headers.get("Content-Length", 0))
+        return json.loads(req.rfile.read(n).decode()) if n else {}
+    except (ValueError, json.JSONDecodeError):
+        return {}
+
+
+class Handler(BaseHTTPRequestHandler):
+    def log_message(self, fmt, *args):  # quiet access log
+        pass
+
+    def _send(self, code, payload):
+        body = json.dumps(payload).encode()
+        self.send_response(code)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def _run_tool(self, name, body):
+        args = body.get("args", [])
+        try:
+            docker_cmd, m = mb.build_docker_command(name, args)
+        except ValueError as e:
+            self._send(400, {"error": str(e)})
+            return
+        if body.get("print"):
+            self._send(200, {"ok": True, "command": " ".join(docker_cmd)})
+            return
+        try:
+            proc = subprocess.run(docker_cmd, capture_output=True, text=True)
+        except FileNotFoundError:
+            self._send(500, {"error": "docker not available"})
+            return
+        out = proc.stdout
+        text, _ok = mb.render_output(m, out)
+        self._send(200, {
+            "ok": proc.returncode == 0,
+            "exit_code": proc.returncode,
+            "command": " ".join(docker_cmd),
+            "stdout": text if text else "",
+            "stderr": proc.stderr,
+        })
+
+    def do_GET(self):
+        parsed = urllib.parse.urlparse(self.path)
+        path = parsed.path.rstrip("/") or "/"
+        if path == "/tools":
+            self._send(200, mb.list_tools())
+            return
+        if path == "/pipelines":
+            self._send(200, mb.list_pipelines())
+            return
+        if path.startswith("/tools/"):
+            name = urllib.parse.unquote(path[len("/tools/"):])
+            d = mb.describe_tool(name)
+            if d is None:
+                self._send(404, {"error": f"unknown tool '{name}'"})
+            else:
+                self._send(200, d)
+            return
+        self._send(404, {"error": "not found"})
+
+    def do_POST(self):
+        parsed = urllib.parse.urlparse(self.path)
+        path = parsed.path.rstrip("/") or "/"
+        body = json_body(self)
+        if path == "/refresh":
+            try:
+                tools = mb.refresh_registry(verbose=False)
+            except ValueError as e:
+                self._send(400, {"error": str(e)})
+                return
+            self._send(200, {"ok": True, "tools": tools})
+            return
+        if path.startswith("/pipelines/"):
+            rest = path[len("/pipelines/"):]
+            if rest.endswith("/run"):
+                name = urllib.parse.unquote(rest[:-4])
+                try:
+                    pipeline = mb.load_pipeline(name)
+                    inputs = mb.validate_pipeline_inputs(pipeline, body.get("args", []))
+                except ValueError as e:
+                    self._send(400, {"error": str(e)})
+                    return
+                exit_code, results = mb.run_pipeline(name, inputs)
+                self._send(200, {"ok": exit_code == 0, "exit_code": exit_code,
+                                 "steps": results})
+                return
+        if path.startswith("/tools/"):
+            rest = path[len("/tools/"):]
+            if "/run" in rest:
+                name = urllib.parse.unquote(rest[:-4])
+                self._run_tool(name, body)
+                return
+            if rest.endswith("/install"):
+                name = urllib.parse.unquote(rest[:-len("/install")])
+                tool = mb.find_tool(name)
+                if tool is None:
+                    self._send(404, {"error": f"unknown tool '{name}'"})
+                    return
+                m = mb.load_tool_manifest(tool)
+                image = m["run"]["image"]
+                rc = subprocess.run(["docker", "pull", image], capture_output=True, text=True)
+                self._send(200, {"ok": rc.returncode == 0,
+                                 "message": f"pulled {image}",
+                                 "stderr": rc.stderr})
+                return
+        self._send(404, {"error": "not found"})
+
+
+def main():
+    server = ThreadingHTTPServer((HOST, PORT), Handler)
+    print(f"mischiefbox-api listening on {HOST}:{PORT}", flush=True)
+    server.serve_forever()
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except KeyboardInterrupt:
+        sys.exit(0)

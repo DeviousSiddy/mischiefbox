@@ -1,0 +1,19 @@
+# Dependencies
+.env
+*.log
+
+# Runtime directories
+tools/
+secrets/
+.ssh/
+pipelines/*
+!pipelines/write-new-notepad/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Python
+__pycache__/
+*.pyc
+*.pyo

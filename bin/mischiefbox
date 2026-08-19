@@ -1,0 +1,366 @@
+#!/usr/bin/env python3
+"""MischiefBox CLI (V0.3). Thin client over mischiefboxlib.
+
+Local mode (default) builds docker commands and runs them directly.
+API mode (--api URL or $MB_API) forwards to the mischiefbox HTTP API.
+"""
+import argparse
+import json
+import os
+import subprocess
+import sys
+import urllib.request
+import urllib.error
+
+import mischiefboxlib as mb
+
+
+def api_request(method, path, body=None, base=None):
+    base = base or os.environ.get("MB_API", "")
+    url = base.rstrip("/") + path
+    data = json.dumps(body).encode() if body is not None else None
+    req = urllib.request.Request(url, data=data, method=method,
+                                 headers={"Content-Type": "application/json"})
+    try:
+        with urllib.request.urlopen(req) as r:
+            return r.status, json.loads(r.read().decode())
+    except urllib.error.HTTPError as e:
+        try:
+            err = json.loads(e.read().decode())
+        except Exception:
+            err = {"error": e.reason}
+        raise RuntimeError(err.get("error", e.reason))
+
+
+def api_base(args):
+    return getattr(args, "api_url", None) or os.environ.get("MB_API")
+
+
+def api_enabled(args):
+    return bool(api_base(args))
+
+
+def cmd_refresh(args):
+    if api_enabled(args):
+        try:
+            _, res = api_request("POST", "/refresh", base=api_base(args))
+        except RuntimeError as e:
+            print(f"mischiefbox: {e}", file=sys.stderr)
+            return 1
+        print(f"refreshed {len(res.get('tools', []))} tools from Gitea org")
+        return 0 if res.get("ok") else 1
+    try:
+        tools = mb.refresh_registry(verbose=True)
+    except ValueError as e:
+        print(f"mischiefbox: {e}", file=sys.stderr)
+        return 1
+    print(f"registry.toml: {len(tools)} tools from Gitea org '{mb.GITEA_ORG}'")
+    return 0
+
+
+def cmd_token(args):
+    """Store the Gitea discovery token (never committed)."""
+    token = args.token
+    os.makedirs(mb.SECRETS_DIR, exist_ok=True)
+    with open(mb.DISCOVERY_TOKEN_FILE, "w") as f:
+        f.write(token.strip() + "\n")
+    os.chmod(mb.DISCOVERY_TOKEN_FILE, 0o600)
+    print(f"discovery token stored at {mb.DISCOVERY_TOKEN_FILE} (0600)")
+    return 0
+
+
+def cmd_list(args):
+    if api_enabled(args):
+        try:
+            _, tools = api_request("GET", "/tools", base=api_base(args))
+        except RuntimeError as e:
+            print(f"mischiefbox: {e}", file=sys.stderr)
+            return 1
+        width = max(len(t["name"]) for t in tools) if tools else 1
+        for t in tools:
+            print(f"{t['name']:<{width}}  {t['version']:<8}  {t['description']}")
+        return 0
+    tools = mb.list_tools()
+    width = max(len(t["name"]) for t in tools) if tools else 1
+    for t in tools:
+        print(f"{t['name']:<{width}}  {t['version']:<8}  {t['description']}")
+    return 0
+
+
+def _print_capabilities(caps):
+    print("capabilities:")
+    if not caps:
+        print("  (none declared — runtime defaults apply)")
+        return
+    print(f"  network:     {caps.get('network', 'none')}")
+    print(f"  privileged:  {bool(caps.get('privileged', False))}")
+    print(f"  pid:         {bool(caps.get('pid', False))}")
+    mounts = caps.get("mounts") or []
+    if mounts:
+        print("  mounts:")
+        for mnt in mounts:
+            print(f"    {mnt}")
+
+
+def cmd_describe(args):
+    if api_enabled(args):
+        try:
+            _, d = api_request("GET", f"/tools/{args.tool}", base=api_base(args))
+        except RuntimeError as e:
+            print(f"mischiefbox: {e}", file=sys.stderr)
+            return 1
+        print(f"{d['name']}  v{d['version']}")
+        print(f"  {d['description']}\n")
+        _print_capabilities(d.get("capabilities") or {})
+        print()
+        print("inputs:")
+        if not d["inputs"]:
+            print("  (none — passthrough)")
+        for key, s in d["inputs"].items():
+            flags = []
+            if s.get("flag"):
+                flags.append(f"--{key}")
+            elif s.get("env"):
+                flags.append(f"--{key} (env {s['env']})")
+            elif s.get("positional"):
+                flags.append("<positional>")
+            req = "required" if s.get("required") else f"default={s.get('default')!r}"
+            vals = f" values={s['values']}" if s.get("values") else ""
+            print(f"  {key:<16} {s['type']:<7} {req:<16} {' '.join(flags)}{vals}  {s.get('description','')}")
+        print("\noutputs:")
+        outs = d.get("outputs")
+        if outs:
+            print(f"  format: {outs.get('format','json')}")
+            for fname, ftype in (outs.get("fields") or {}).items():
+                print(f"  {fname}: {ftype}")
+        else:
+            print("  (none declared — stdout passes through)")
+        return 0
+    tool = mb.find_tool(args.tool)
+    if not tool:
+        print(f"mischiefbox: unknown tool '{args.tool}'", file=sys.stderr)
+        return 1
+    m = mb.load_tool_manifest(tool)
+    meta = m.get("meta", {})
+    run = m.get("run", {})
+    print(f"{meta.get('name', args.tool)}  v{meta.get('version', '?')}")
+    print(f"  {meta.get('description', '')}\n")
+    _print_capabilities(m.get("capabilities") or {})
+    print()
+    inputs = run.get("inputs", {}) or {}
+    print("inputs:")
+    if not inputs:
+        print("  (none — passthrough)")
+    for key, spec in inputs.items():
+        flags = []
+        if spec.get("flag"):
+            flags.append(f"--{key}")
+        elif spec.get("env"):
+            flags.append(f"--{key} (env {spec['env']})")
+        elif spec.get("positional"):
+            flags.append("<positional>")
+        req = "required" if spec.get("required") else f"default={spec.get('default')!r}"
+        vals = f" values={spec['values']}" if spec.get("values") else ""
+        print(f"  {key:<16} {spec.get('type','string'):<7} {req:<16} "
+              f"{' '.join(flags)}{vals}  {spec.get('description','')}")
+    outputs = run.get("outputs") or {}
+    print("\noutputs:")
+    if outputs:
+        print(f"  format: {outputs.get('format','json')}")
+        for fname, ftype in (outputs.get("fields") or {}).items():
+            print(f"  {fname}: {ftype}")
+    else:
+        print("  (none declared — stdout passes through)")
+    return 0
+
+
+def cmd_install(args):
+    if api_enabled(args):
+        try:
+            _, res = api_request("POST", f"/tools/{args.tool}/install", base=api_base(args))
+        except RuntimeError as e:
+            print(f"mischiefbox: {e}", file=sys.stderr)
+            return 1
+        print(res.get("message", "installed"))
+        return 0 if res.get("ok") else 1
+    tool = mb.find_tool(args.tool)
+    if not tool:
+        print(f"mischiefbox: unknown tool '{args.tool}'", file=sys.stderr)
+        return 1
+    m = mb.load_tool_manifest(tool)
+    image = m["run"]["image"]
+    print(f"pulling {image} ...")
+    rc = subprocess.call(["docker", "pull", image])
+    return rc
+
+
+def cmd_run(args):
+    if api_enabled(args):
+        try:
+            _, res = api_request("POST", f"/tools/{args.tool}/run",
+                                 {"args": args.tool_args, "print": args.print_cmd},
+                                 base=api_base(args))
+        except RuntimeError as e:
+            print(f"mischiefbox: {e}", file=sys.stderr)
+            return 1
+        if args.print_cmd:
+            print(res.get("command", ""))
+            return 0
+        sys.stdout.write(res.get("stdout", ""))
+        if res.get("stderr"):
+            sys.stderr.write(res.get("stderr"))
+        return res.get("exit_code", 1)
+
+    tool = mb.find_tool(args.tool)
+    if not tool:
+        print(f"mischiefbox: unknown tool '{args.tool}'", file=sys.stderr)
+        return 1
+    m = mb.load_tool_manifest(tool)
+    try:
+        docker_cmd, m2 = mb.build_docker_command(args.tool, args.tool_args)
+    except ValueError as e:
+        print(f"mischiefbox: {e}", file=sys.stderr)
+        return 1
+    if args.print_cmd:
+        print(" ".join(docker_cmd))
+        return 0
+    rc = subprocess.call(docker_cmd)
+    return rc
+
+
+def _step_label(step, idx, total):
+    tool = step.get("tool", "?")
+    args = " ".join(step.get("args", []))
+    return f"  [{idx}/{total}] {tool}" + (f" {args}" if args else "")
+
+
+def run_pipeline_steps(name, pipeline, inputs, api_url=None):
+    """Execute a pipeline's steps; fail-fast on first error. API mode forwards
+    each step to the HTTP API; local mode runs docker directly.
+    Returns (exit_code, results)."""
+    steps = pipeline.get("steps", [])
+    results = []
+    for idx, step in enumerate(steps, 1):
+        tool = step.get("tool")
+        if not tool:
+            print(f"pipeline '{name}': step {idx} missing 'tool'", file=sys.stderr)
+            return 1, results
+        step_args = mb.interpolate(step.get("args", []), inputs)
+        print(_step_label(step, idx, len(steps)))
+        if api_url:
+            try:
+                _, res = api_request("POST", f"/tools/{tool}/run",
+                                     {"args": step_args}, base=api_url)
+            except RuntimeError as e:
+                print(f"  ERROR: {e}", file=sys.stderr)
+                return 1, results
+            stdout = res.get("stdout", "")
+            rc = res.get("exit_code", 1)
+        else:
+            try:
+                docker_cmd, _m = mb.build_docker_command(tool, step_args)
+            except ValueError as e:
+                print(f"  ERROR: {e}", file=sys.stderr)
+                return 1, results
+            rc = subprocess.call(docker_cmd)
+            stdout = ""
+        results.append({"tool": tool, "args": step_args, "stdout": stdout,
+                        "exit_code": rc})
+        if stdout.strip():
+            print("  " + stdout.rstrip().replace("\n", "\n  "))
+        if rc != 0:
+            print(f"  ERROR: exit {rc}", file=sys.stderr)
+            return rc, results
+    return 0, results
+
+
+def cmd_pipeline(args):
+    if args.name == "list":
+        if api_enabled(args):
+            try:
+                _, pipes = api_request("GET", "/pipelines", base=api_base(args))
+            except RuntimeError as e:
+                print(f"mischiefbox: {e}", file=sys.stderr)
+                return 1
+            width = max(len(p["name"]) for p in pipes) if pipes else 1
+            for p in pipes:
+                print(f"{p['name']:<{width}}  v{p['version']:<6}  {p['steps']} steps  {p['description']}")
+            return 0
+        pipes = mb.list_pipelines()
+        if not pipes:
+            print("(no pipelines found in " + mb.PIPELINES_DIR + ")")
+            return 0
+        width = max(len(p["name"]) for p in pipes)
+        for p in pipes:
+            print(f"{p['name']:<{width}}  v{p['version']:<6}  {p['steps']} steps  {p['description']}")
+        return 0
+
+    try:
+        pipeline = mb.load_pipeline(args.name)
+        inputs = mb.validate_pipeline_inputs(pipeline, args.inputs)
+    except ValueError as e:
+        print(f"mischiefbox: {e}", file=sys.stderr)
+        return 1
+    print(f"pipeline '{args.name}':")
+    return run_pipeline_steps(args.name, pipeline, inputs,
+                              api_url=api_base(args))[0]
+
+
+def main():
+    parser = argparse.ArgumentParser(prog="mischiefbox",
+                                     description="MischiefBox tool runner (V0.3)")
+    parser.add_argument("--api", dest="api_url", default=None, metavar="URL",
+                        help="use the HTTP API at URL instead of running docker locally")
+    sub = parser.add_subparsers(dest="command", required=True)
+
+    sub.add_parser("list", help="list available tools")
+
+    sub.add_parser("refresh", help="re-discover tools from the Gitea org (V0.5)")
+
+    p_token = sub.add_parser("token", help="store the Gitea discovery token")
+    p_token.add_argument("token")
+
+    p_describe = sub.add_parser("describe", help="show a tool's input/output schema")
+    p_describe.add_argument("tool")
+
+    p_install = sub.add_parser("install", help="pull a tool's image")
+    p_install.add_argument("tool")
+
+    p_run = sub.add_parser("run", help="run a tool")
+    p_run.add_argument("--print", dest="print_cmd", action="store_true",
+                       help="print the docker command instead of running it")
+    p_run.add_argument("tool")
+    p_run.add_argument("tool_args", nargs=argparse.REMAINDER)
+
+    p_pipe = sub.add_parser("pipeline", help="run or list pipelines (V0.6)")
+    p_pipe.add_argument("name", nargs="?", default=None)
+    p_pipe.add_argument("inputs", nargs=argparse.REMAINDER)
+
+    args = parser.parse_args()
+    if args.command == "list":
+        return cmd_list(args)
+    if args.command == "refresh":
+        return cmd_refresh(args)
+    if args.command == "token":
+        return cmd_token(args)
+    if args.command == "describe":
+        return cmd_describe(args)
+    if args.command == "install":
+        return cmd_install(args)
+    if args.command == "run":
+        if args.tool == "pipeline":
+            # `run pipeline <name> [--key value ...]`
+            args.name = args.tool_args[0] if args.tool_args else None
+            args.inputs = args.tool_args[1:]
+            if not args.name:
+                print("mischiefbox: 'run pipeline' needs a pipeline name", file=sys.stderr)
+                return 1
+            return cmd_pipeline(args)
+        return cmd_run(args)
+    if args.command == "pipeline":
+        return cmd_pipeline(args)
+    return 2
+
+
+if __name__ == "__main__":
+    sys.exit(main())

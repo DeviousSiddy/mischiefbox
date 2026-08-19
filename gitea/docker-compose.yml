@@ -1,0 +1,31 @@
+services:
+  gitea:
+    image: gitea/gitea:latest
+    container_name: gitea
+    environment:
+      - USER_UID=1000
+      - USER_GID=1000
+      - GITEA__server__DOMAIN=${MB_GITEA_DOMAIN:-localhost}
+      - GITEA__server__SSH_DOMAIN=${MB_GITEA_DOMAIN:-localhost}
+      - GITEA__server__ROOT_URL=http://${MB_GITEA_DOMAIN:-localhost}:${MB_GITEA_PORT:-3010}/
+      - GITEA__server__SSH_PORT=${MB_GITEA_SSH_PORT:-3022}
+      - GITEA__server__SSH_LISTEN_PORT=22
+      - GITEA__actions__ENABLED=true
+      - GITEA__packages__ENABLED=true
+    restart: unless-stopped
+    ports:
+      - "${MB_GITEA_PORT:-3010}:3000"
+      - "${MB_GITEA_SSH_PORT:-3022}:22"
+    volumes:
+      - gitea_data:/data
+      - /etc/timezone:/etc/timezone:ro
+      - /etc/localtime:/etc/localtime:ro
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000/api/v1/version"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+
+volumes:
+  gitea_data:

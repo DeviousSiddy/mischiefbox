@@ -1,0 +1,18 @@
+[Unit]
+Description=MischiefBox HTTP API
+After=network.target
+
+[Service]
+Type=simple
+User=mischiefbox
+WorkingDirectory=/opt/mischiefbox
+ExecStart=/usr/bin/python3 /opt/mischiefbox/bin/mischiefbox-api
+Environment=MB_HOME=/opt/mischiefbox
+Environment=MB_API_HOST=127.0.0.1
+Environment=MB_API_PORT=8731
+Environment=MB_DOCS_DIR=/opt/mischiefbox/docs
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

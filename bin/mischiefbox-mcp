@@ -1,0 +1,265 @@
+#!/usr/bin/env python3
+"""MischiefBox MCP adapter (V0.7). Stdlib only.
+
+Exposes the discovered MischiefBox tools to MCP clients (Claude Desktop, agents,
+Bunny Hole, ...) over stdio + newline-delimited JSON-RPC 2.0.
+
+This is an ADAPTER: it maps the platform's tools onto MCP's shape
+(tools/list + tools/call) and never leaks the internal model (registry.toml
+layout, docker command building, secrets) to clients.
+
+Methods:
+  initialize                 -> serverInfo + capabilities + negotiated protocolVersion
+  notifications/initialized  -> (notification, no reply)
+  ping                       -> {}
+  resources/list             -> {resources: [{uri, name, mimeType, description}]}
+  resources/templates/list   -> {resourceTemplates: []}
+  resources/read             -> {contents: [{uri, mimeType, text}]}
+  tools/list                 -> {tools: [{name, description, inputSchema}]}
+  tools/call                 -> {content: [{type: "text", text}], isError}
+  shutdown                   -> exit 0
+"""
+import json
+import os
+import subprocess
+import sys
+
+import mischiefboxlib as mb
+
+VERSION = "0.7.1"
+SERVER_NAME = "mischiefbox-mcp"
+SUPPORTED_VERSIONS = ("2024-11-05", "2025-03-26", "2025-06-18")
+DEFAULT_VERSION = "2024-11-05"
+
+# --- MCP resources: project docs (authoring context for agents) ---------
+
+_DOCS_DIR = os.environ.get("MB_DOCS_DIR", os.path.join(mb.MISCHIEFBOX_DIR, "docs"))
+_RESOURCES = {
+    "mischiefbox://docs/mischiefbox-dev-guide": {
+        "name": "mischiefbox-dev-guide.md",
+        "path": "mischiefbox-dev-guide.md",
+        "mimeType": "text/markdown",
+        "description": "The tool-authoring contract: tool.toml manifest schema, "
+                       "Docker conventions, [runtime]/[capabilities], publish+refresh workflow",
+    },
+}
+
+
+def _resources_list():
+    out = []
+    for uri, r in _RESOURCES.items():
+        out.append({"uri": uri, "name": r["name"], "mimeType": r["mimeType"],
+                    "description": r["description"]})
+    return out
+
+
+def resources_read(uri):
+    r = _RESOURCES.get(uri)
+    if r is None:
+        raise ValueError(f"unknown resource '{uri}'")
+    path = os.path.join(_DOCS_DIR, r["path"])
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            text = f.read()
+    except OSError as e:
+        raise RuntimeError(f"cannot read {r['path']}: {e}")
+    return [{"uri": uri, "mimeType": r["mimeType"], "text": text}]
+
+JSON_RPC_PARSE_ERROR = -32700
+JSON_RPC_INVALID_REQUEST = -32600
+JSON_RPC_METHOD_NOT_FOUND = -32601
+JSON_RPC_INVALID_PARAMS = -32602
+JSON_RPC_INTERNAL_ERROR = -32603
+
+
+# --- MCP tool mapping ---------------------------------------------------
+
+_TYPE_MAP = {
+    "string": "string",
+    "int": "integer",
+    "float": "number",
+    "bool": "boolean",
+    "enum": "string",
+}
+
+
+def _input_schema(m):
+    """Convert a tool's [run.inputs] into a JSON Schema object for MCP."""
+    specs = m.get("run", {}).get("inputs", {}) or {}
+    properties = {}
+    required = []
+    for key, spec in specs.items():
+        t = spec.get("type", "string")
+        prop = {"type": _TYPE_MAP.get(t, "string"),
+                "description": spec.get("description", "")}
+        if t == "enum" and spec.get("values"):
+            prop["enum"] = list(spec["values"])
+        if "default" in spec:
+            prop["default"] = spec["default"]
+        properties[key] = prop
+        if spec.get("required", False) and "default" not in spec:
+            required.append(key)
+    schema = {"type": "object", "properties": properties}
+    if required:
+        schema["required"] = required
+    return schema
+
+
+def tools_list():
+    """Map the discovered tools onto MCP tool definitions."""
+    tools = []
+    for t in mb.list_tools():
+        try:
+            tool = mb.find_tool(t["name"])
+            m = mb.load_tool_manifest(tool)
+        except (ValueError, OSError):
+            continue
+        tools.append({
+            "name": t["name"],
+            "description": t.get("description", ""),
+            "inputSchema": _input_schema(m),
+        })
+    return tools
+
+
+def args_from_dict(specs, arguments):
+    """Convert an MCP arguments object into CLI-style '--key value' args."""
+    args = []
+    for key, value in arguments.items():
+        if key not in specs:
+            raise ValueError(f"unknown input '{key}'")
+        spec = specs[key]
+        if spec.get("type") == "bool":
+            if isinstance(value, bool):
+                args.append(f"--{key}=true" if value else f"--{key}=false")
+            else:
+                args.append(f"--{key}={value}")
+        else:
+            args += [f"--{key}", str(value)]
+    return args
+
+
+def tools_call(name, arguments):
+    """Run a tool and return (content_list, is_error)."""
+    tool = mb.find_tool(name)
+    if tool is None:
+        raise ValueError(f"unknown tool '{name}'")
+    m = mb.load_tool_manifest(tool)
+    specs = m.get("run", {}).get("inputs", {}) or {}
+    args = args_from_dict(specs, arguments or {})
+    try:
+        docker_cmd, m2 = mb.build_docker_command(name, args)
+    except ValueError as e:
+        raise ValueError(f"tool '{name}': {e}")
+    try:
+        proc = subprocess.run(docker_cmd, capture_output=True, text=True)
+    except FileNotFoundError:
+        raise RuntimeError("docker not available")
+    text, _ok = mb.render_output(m2, proc.stdout)
+    if not text.strip() and proc.stderr.strip():
+        text = proc.stderr
+    return ([{"type": "text", "text": text}], proc.returncode != 0)
+
+
+# --- JSON-RPC plumbing --------------------------------------------------
+
+def ok(id_, result):
+    return {"jsonrpc": "2.0", "id": id_, "result": result}
+
+
+def err(id_, code, message):
+    return {"jsonrpc": "2.0", "id": id_, "error": {"code": code, "message": message}}
+
+
+def handle_request(msg):
+    """Handle one JSON-RPC request/notification. Returns response dict or None."""
+    if not isinstance(msg, dict) or msg.get("jsonrpc") != "2.0":
+        return err(msg.get("id") if isinstance(msg, dict) else None,
+                   JSON_RPC_INVALID_REQUEST, "invalid JSON-RPC message")
+    method = msg.get("method")
+    rid = msg.get("id")
+    params = msg.get("params") or {}
+
+    if method == "initialize":
+        # Negotiate protocol version.
+        client_ver = params.get("protocolVersion")
+        proto = client_ver if client_ver in SUPPORTED_VERSIONS else DEFAULT_VERSION
+        return ok(rid, {
+            "protocolVersion": proto,
+            "capabilities": {
+                "tools": {"listChanged": False},
+                "resources": {"subscribe": False, "listChanged": False},
+            },
+            "serverInfo": {"name": SERVER_NAME, "version": VERSION},
+        })
+
+    if method in ("notifications/initialized", "notifications/cancelled"):
+        return None  # notification: no reply
+
+    if method == "ping":
+        return ok(rid, {})
+
+    if method == "resources/list":
+        return ok(rid, {"resources": _resources_list()})
+
+    if method == "resources/templates/list":
+        return ok(rid, {"resourceTemplates": []})
+
+    if method == "resources/read":
+        uri = params.get("uri")
+        if not isinstance(uri, str) or not uri:
+            return err(rid, JSON_RPC_INVALID_PARAMS, "missing 'uri'")
+        try:
+            contents = resources_read(uri)
+        except ValueError as e:
+            return err(rid, JSON_RPC_INVALID_PARAMS, str(e))
+        except RuntimeError as e:
+            return err(rid, JSON_RPC_INTERNAL_ERROR, str(e))
+        return ok(rid, {"contents": contents})
+
+    if method == "tools/list":
+        return ok(rid, {"tools": tools_list()})
+
+    if method == "tools/call":
+        name = params.get("name")
+        if not isinstance(name, str) or not name:
+            return err(rid, JSON_RPC_INVALID_PARAMS, "missing 'name'")
+        try:
+            content, is_error = tools_call(name, params.get("arguments"))
+        except ValueError as e:
+            return err(rid, JSON_RPC_INVALID_PARAMS, str(e))
+        except RuntimeError as e:
+            return err(rid, JSON_RPC_INTERNAL_ERROR, str(e))
+        return ok(rid, {"content": content, "isError": is_error})
+
+    if method == "shutdown":
+        sys.stdout.write(json.dumps(ok(rid, {})) + "\n")
+        sys.stdout.flush()
+        sys.exit(0)
+
+    return err(rid, JSON_RPC_METHOD_NOT_FOUND, f"method not found: {method}")
+
+
+def main():
+    for line in sys.stdin:
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            msg = json.loads(line)
+        except json.JSONDecodeError:
+            sys.stdout.write(json.dumps(err(None, JSON_RPC_PARSE_ERROR,
+                                            "invalid JSON")) + "\n")
+            sys.stdout.flush()
+            continue
+        resp = handle_request(msg)
+        if resp is not None:
+            sys.stdout.write(json.dumps(resp) + "\n")
+            sys.stdout.flush()
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except BrokenPipeError:
+        sys.exit(0)
