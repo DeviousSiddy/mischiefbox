@@ -169,6 +169,7 @@ if [[ ! -f "$INSTALL_DIR/.env" ]]; then
 
 # Gitea configuration
 MB_GITEA_URL=http://localhost:3010
+MB_GITEA_SSH_HOST=localhost
 MB_GITEA_SSH_PORT=3022
 MB_GITEA_DOMAIN=localhost
 MB_GITEA_PORT=3010

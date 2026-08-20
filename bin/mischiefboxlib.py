@@ -22,10 +22,12 @@ SENSITIVE_ARGS = {"token", "password", "secret", "key", "api_key", "apikey"}
 
 GITEA_URL = os.environ.get("MB_GITEA_URL", "http://localhost:3010")
 GITEA_ORG = os.environ.get("MB_GITEA_ORG", "mischiefbox")
+GITEA_SSH_HOST = os.environ.get("MB_GITEA_SSH_HOST", "localhost")
+GITEA_SSH_PORT = os.environ.get("MB_GITEA_SSH_PORT", "3022")
 
 # git over Gitea's SSH port; uses the registered deploy key.
 GIT_SSH = ("ssh -i {0}/.ssh/id_ed25519 -o StrictHostKeyChecking=no "
-           "-o UserKnownHostsFile=/dev/null -p 3022").format(MISCHIEFBOX_DIR)
+           "-o UserKnownHostsFile=/dev/null -p {1}").format(MISCHIEFBOX_DIR, GITEA_SSH_PORT)
 
 INPUT_TYPES = ("string", "int", "float", "bool", "enum")
 
@@ -478,7 +480,7 @@ def _sync_repo(repo, local_dir):
                 env=env)
         return True
     os.makedirs(os.path.dirname(local_dir), exist_ok=True)
-    url = f"ssh://git@TheBarracks:3022/{GITEA_ORG}/{repo}.git"
+    url = f"ssh://git@{GITEA_SSH_HOST}:{GITEA_SSH_PORT}/{GITEA_ORG}/{repo}.git"
     r = subprocess.run(
         ["git", "clone", "--quiet", url, local_dir],
         env={**os.environ, "GIT_SSH_COMMAND": GIT_SSH})

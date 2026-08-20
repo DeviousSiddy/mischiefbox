@@ -298,6 +298,7 @@ Configuration is via environment variables or `/opt/mischiefbox/.env`:
 |----------|---------|-------------|
 | `MB_HOME` | `/opt/mischiefbox` | MischiefBox home directory |
 | `MB_GITEA_URL` | `http://localhost:3010` | Gitea API URL |
+| `MB_GITEA_SSH_HOST` | `localhost` | Gitea SSH hostname (for git clones) |
 | `MB_GITEA_SSH_PORT` | `3022` | Gitea SSH port |
 | `MB_GITEA_ORG` | `mischiefbox` | Gitea organization name |
 | `MB_API_HOST` | `127.0.0.1` | API bind address |
