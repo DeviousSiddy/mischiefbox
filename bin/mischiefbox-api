@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""MischiefBox HTTP API (V0.3). Stdlib only.
+"""MischiefBox HTTP API (V0.8). Stdlib only.
 
 Endpoints:
   GET  /tools                    list tools
@@ -8,6 +8,7 @@ Endpoints:
   POST /tools/{name}/install     pull the tool image
   GET  /pipelines                list pipelines
   POST /pipelines/{name}/run     run a pipeline  body: {"args": [...], "print": bool}
+  GET  /history                  list run history  ?tool=<name>&last=<n>
 
 Security: binds localhost by default. Tools have real host access, so this
 must not be exposed to the internet without auth.
@@ -55,11 +56,23 @@ class Handler(BaseHTTPRequestHandler):
         if body.get("print"):
             self._send(200, {"ok": True, "command": " ".join(docker_cmd)})
             return
+
+        # Log run start
+        start_time = mb.log_run_start(name, args, source="api")
+
         try:
             proc = subprocess.run(docker_cmd, capture_output=True, text=True)
         except FileNotFoundError:
+            mb.log_run_end(name, args, -1, start_time,
+                           stderr="docker not available", source="api", manifest=m)
             self._send(500, {"error": "docker not available"})
             return
+
+        # Log run end
+        mb.log_run_end(name, args, proc.returncode, start_time,
+                       stdout=proc.stdout, stderr=proc.stderr,
+                       source="api", manifest=m)
+
         out = proc.stdout
         text, _ok = mb.render_output(m, out)
         self._send(200, {
@@ -73,11 +86,19 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         parsed = urllib.parse.urlparse(self.path)
         path = parsed.path.rstrip("/") or "/"
+        params = urllib.parse.parse_qs(parsed.query)
+
         if path == "/tools":
             self._send(200, mb.list_tools())
             return
         if path == "/pipelines":
             self._send(200, mb.list_pipelines())
+            return
+        if path == "/history":
+            tool = params.get("tool", [None])[0]
+            last = int(params.get("last", ["20"])[0])
+            entries = mb.read_history(tool=tool, last=last)
+            self._send(200, entries)
             return
         if path.startswith("/tools/"):
             name = urllib.parse.unquote(path[len("/tools/"):])

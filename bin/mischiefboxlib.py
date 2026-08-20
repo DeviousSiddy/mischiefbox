@@ -6,22 +6,26 @@ Used by both the CLI and the HTTP API. Stdlib only (3.11+).
 import json
 import os
 import subprocess
+import time
 import tomllib
 
-MISCHIEFBOX_DIR = os.environ.get("MB_HOME", os.path.expanduser("~/mischiefbox"))
+MISCHIEFBOX_DIR = os.path.expanduser("~/mischiefbox")
 REGISTRY_FILE = os.path.join(MISCHIEFBOX_DIR, "registry.toml")
 SECRETS_DIR = os.path.join(MISCHIEFBOX_DIR, "secrets")
 DISCOVERY_TOKEN_FILE = os.path.join(SECRETS_DIR, "gitea-discovery-token")
 TOOLS_DIR = os.path.join(MISCHIEFBOX_DIR, "tools")
 PIPELINES_DIR = os.path.join(MISCHIEFBOX_DIR, "pipelines")
+RUNS_LOG_FILE = os.path.join(MISCHIEFBOX_DIR, "runs.log")
+
+# Args that may contain secrets - redact in logs
+SENSITIVE_ARGS = {"token", "password", "secret", "key", "api_key", "apikey"}
 
 GITEA_URL = os.environ.get("MB_GITEA_URL", "http://localhost:3010")
 GITEA_ORG = os.environ.get("MB_GITEA_ORG", "mischiefbox")
 
 # git over Gitea's SSH port; uses the registered deploy key.
 GIT_SSH = ("ssh -i {0}/.ssh/id_ed25519 -o StrictHostKeyChecking=no "
-           "-o UserKnownHostsFile=/dev/null -p {1}").format(
-               MISCHIEFBOX_DIR, os.environ.get("MB_GITEA_SSH_PORT", "3022"))
+           "-o UserKnownHostsFile=/dev/null -p 3022").format(MISCHIEFBOX_DIR)
 
 INPUT_TYPES = ("string", "int", "float", "bool", "enum")
 
@@ -310,6 +314,98 @@ def list_tools():
     return rows
 
 
+# --- V0.8 run history logging ---
+
+def _redact_args(args, manifest):
+    """Redact sensitive values from args for logging."""
+    specs = manifest.get("run", {}).get("inputs", {}) or {}
+    redacted = []
+    skip_next = False
+    for i, arg in enumerate(args):
+        if skip_next:
+            skip_next = False
+            redacted.append("***")
+            continue
+        if arg.startswith("--"):
+            key = arg.lstrip("-").split("=")[0]
+            if any(s in key.lower() for s in SENSITIVE_ARGS):
+                if "=" in arg:
+                    redacted.append(f"--{key}=***")
+                else:
+                    redacted.append(arg)
+                    skip_next = True
+            elif "=" in arg:
+                k, v = arg.split("=", 1)
+                if any(s in k.lower() for s in SENSITIVE_ARGS):
+                    redacted.append(f"{k}=***")
+                else:
+                    redacted.append(arg)
+            else:
+                redacted.append(arg)
+        else:
+            redacted.append(arg)
+    return redacted
+
+
+def log_run(tool, args, exit_code, stdout_preview="", stderr_preview="",
+            duration_ms=0, source="cli", manifest=None):
+    """Append a run entry to runs.log (JSONL format)."""
+    entry = {
+        "ts": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+        "tool": tool,
+        "args": _redact_args(args, manifest) if manifest else args,
+        "exit_code": exit_code,
+        "stdout_preview": (stdout_preview[:200] + "...") if len(stdout_preview) > 200 else stdout_preview,
+        "stderr_preview": (stderr_preview[:200] + "...") if len(stderr_preview) > 200 else stderr_preview,
+        "duration_ms": duration_ms,
+        "source": source,
+    }
+    try:
+        with open(RUNS_LOG_FILE, "a") as f:
+            f.write(json.dumps(entry) + "\n")
+    except OSError:
+        pass  # best effort - don't fail the run because of logging
+
+
+def log_run_start(tool, args, source="cli"):
+    """Log the start of a run. Returns start_time for later use."""
+    return time.time()
+
+
+def log_run_end(tool, args, exit_code, start_time, stdout="", stderr="",
+                source="cli", manifest=None):
+    """Log the end of a run with timing info."""
+    duration_ms = int((time.time() - start_time) * 1000)
+    log_run(tool, args, exit_code,
+            stdout_preview=stdout[:500] if stdout else "",
+            stderr_preview=stderr[:500] if stderr else "",
+            duration_ms=duration_ms, source=source, manifest=manifest)
+
+
+def read_history(tool=None, last=20):
+    """Read run history from runs.log. Returns list of entries, most recent first."""
+    entries = []
+    if not os.path.isfile(RUNS_LOG_FILE):
+        return entries
+    try:
+        with open(RUNS_LOG_FILE) as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    entry = json.loads(line)
+                    if tool and entry.get("tool") != tool:
+                        continue
+                    entries.append(entry)
+                except json.JSONDecodeError:
+                    continue
+    except OSError:
+        return []
+    entries.reverse()
+    return entries[:last]
+
+
 # --- V0.5 discovery: registry.toml is derived from the Gitea org ---
 
 def discovery_token():
@@ -318,7 +414,7 @@ def discovery_token():
             return f.read().strip()
     except OSError:
         raise ValueError("no discovery token at " + DISCOVERY_TOKEN_FILE +
-                         " (run: mischiefbox token <sha1>)")
+                         " (run: mb token <sha1>)")
 
 
 def _gitea(path):
@@ -382,7 +478,7 @@ def _sync_repo(repo, local_dir):
                 env=env)
         return True
     os.makedirs(os.path.dirname(local_dir), exist_ok=True)
-    url = f"ssh://git@localhost:{os.environ.get('MB_GITEA_SSH_PORT', '3022')}/{GITEA_ORG}/{repo}.git"
+    url = f"ssh://git@TheBarracks:3022/{GITEA_ORG}/{repo}.git"
     r = subprocess.run(
         ["git", "clone", "--quiet", url, local_dir],
         env={**os.environ, "GIT_SSH_COMMAND": GIT_SSH})
@@ -408,12 +504,10 @@ def refresh_registry(verbose=False):
     for t in found:
         local = os.path.join(MISCHIEFBOX_DIR, t["source"])
         if not os.path.isdir(local):
-            if verbose:
-                print(f"  cloning {t['name']} ...")
+            print(f"  cloning {t['name']} ...")
             _sync_repo(t["name"], local)
         else:
-            if verbose:
-                print(f"  pulling {t['name']} ...")
+            print(f"  pulling {t['name']} ...")
             _sync_repo(t["name"], local)
     lines = []
     for t in found:

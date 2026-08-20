@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""MischiefBox CLI (V0.3). Thin client over mischiefboxlib.
+"""MischiefBox CLI (V0.8). Thin client over mischiefboxlib.
 
 Local mode (default) builds docker commands and runs them directly.
 API mode (--api URL or $MB_API) forwards to the mischiefbox HTTP API.
@@ -9,6 +9,7 @@ import json
 import os
 import subprocess
 import sys
+import time
 import urllib.request
 import urllib.error
 
@@ -160,7 +161,7 @@ def cmd_describe(args):
         elif spec.get("positional"):
             flags.append("<positional>")
         req = "required" if spec.get("required") else f"default={spec.get('default')!r}"
-        vals = f" values={spec['values']}" if spec.get("values") else ""
+        vals = f" values={spec.get('values')}" if spec.get("values") else ""
         print(f"  {key:<16} {spec.get('type','string'):<7} {req:<16} "
               f"{' '.join(flags)}{vals}  {spec.get('description','')}")
     outputs = run.get("outputs") or {}
@@ -224,8 +225,22 @@ def cmd_run(args):
     if args.print_cmd:
         print(" ".join(docker_cmd))
         return 0
-    rc = subprocess.call(docker_cmd)
-    return rc
+
+    # Log run start
+    start_time = mb.log_run_start(args.tool, args.tool_args, source="cli")
+
+    # Run the tool
+    proc = subprocess.run(docker_cmd, capture_output=True, text=True)
+
+    # Log run end
+    mb.log_run_end(args.tool, args.tool_args, proc.returncode, start_time,
+                   stdout=proc.stdout, stderr=proc.stderr, source="cli",
+                   manifest=m2)
+
+    sys.stdout.write(proc.stdout)
+    if proc.stderr:
+        sys.stderr.write(proc.stderr)
+    return proc.returncode
 
 
 def _step_label(step, idx, total):
@@ -258,12 +273,20 @@ def run_pipeline_steps(name, pipeline, inputs, api_url=None):
             rc = res.get("exit_code", 1)
         else:
             try:
-                docker_cmd, _m = mb.build_docker_command(tool, step_args)
+                docker_cmd, m = mb.build_docker_command(tool, step_args)
             except ValueError as e:
                 print(f"  ERROR: {e}", file=sys.stderr)
                 return 1, results
-            rc = subprocess.call(docker_cmd)
-            stdout = ""
+            # Log step start
+            start_time = mb.log_run_start(tool, step_args, source="pipeline")
+            # Run the step
+            proc = subprocess.run(docker_cmd, capture_output=True, text=True)
+            # Log step end
+            mb.log_run_end(tool, step_args, proc.returncode, start_time,
+                           stdout=proc.stdout, stderr=proc.stderr,
+                           source="pipeline", manifest=m)
+            rc = proc.returncode
+            stdout = proc.stdout
         results.append({"tool": tool, "args": step_args, "stdout": stdout,
                         "exit_code": rc})
         if stdout.strip():
@@ -306,9 +329,49 @@ def cmd_pipeline(args):
                               api_url=api_base(args))[0]
 
 
+def cmd_history(args):
+    """Display run history."""
+    if api_enabled(args):
+        try:
+            params = []
+            if args.tool:
+                params.append(f"tool={args.tool}")
+            if args.last != 20:
+                params.append(f"last={args.last}")
+            query = ("?" + "&".join(params)) if params else ""
+            _, entries = api_request("GET", f"/history{query}", base=api_base(args))
+        except RuntimeError as e:
+            print(f"mischiefbox: {e}", file=sys.stderr)
+            return 1
+    else:
+        entries = mb.read_history(tool=args.tool, last=args.last)
+
+    if not entries:
+        print("(no runs found)")
+        return 0
+
+    # Print header
+    print(f"{'TIMESTAMP':<22} {'TOOL':<16} {'EXIT':<6} {'MS':<8} {'SOURCE':<8} ARGS")
+    print("-" * 90)
+
+    for entry in entries:
+        ts = entry.get("ts", "?")
+        tool = entry.get("tool", "?")
+        exit_code = entry.get("exit_code", "?")
+        duration = entry.get("duration_ms", 0)
+        source = entry.get("source", "?")
+        args_str = " ".join(entry.get("args", []))
+        if len(args_str) > 40:
+            args_str = args_str[:37] + "..."
+        status = "ok" if exit_code == 0 else f"fail({exit_code})"
+        print(f"{ts:<22} {tool:<16} {status:<6} {duration:<8} {source:<8} {args_str}")
+
+    return 0
+
+
 def main():
     parser = argparse.ArgumentParser(prog="mischiefbox",
-                                     description="MischiefBox tool runner (V0.3)")
+                                     description="MischiefBox tool runner (V0.8)")
     parser.add_argument("--api", dest="api_url", default=None, metavar="URL",
                         help="use the HTTP API at URL instead of running docker locally")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -336,6 +399,10 @@ def main():
     p_pipe.add_argument("name", nargs="?", default=None)
     p_pipe.add_argument("inputs", nargs=argparse.REMAINDER)
 
+    p_history = sub.add_parser("history", help="show run history (V0.8)")
+    p_history.add_argument("--tool", default=None, help="filter by tool name")
+    p_history.add_argument("--last", type=int, default=20, help="number of entries to show (default: 20)")
+
     args = parser.parse_args()
     if args.command == "list":
         return cmd_list(args)
@@ -359,6 +426,8 @@ def main():
         return cmd_run(args)
     if args.command == "pipeline":
         return cmd_pipeline(args)
+    if args.command == "history":
+        return cmd_history(args)
     return 2
 
 
