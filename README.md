@@ -145,6 +145,11 @@ mischiefbox --api http://localhost:8731 run <tool-name> [--args...]
 # Pipelines
 mischiefbox pipeline list
 mischiefbox pipeline <name> --key value
+
+# View run history
+mischiefbox history                    # show last 20 runs
+mischiefbox history --tool <name>      # filter by tool
+mischiefbox history --last 5           # show last 5 runs
 ```
 
 ### HTTP API
@@ -165,6 +170,10 @@ curl http://localhost:8731/pipelines
 curl -X POST http://localhost:8731/pipelines/<name>/run \
   -H "Content-Type: application/json" \
   -d '{"args": ["--message", "Hello World"]}'
+
+# View run history
+curl http://localhost:8731/history
+curl "http://localhost:8731/history?tool=<name>&last=10"
 ```
 
 ### MCP Adapter

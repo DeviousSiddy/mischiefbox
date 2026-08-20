@@ -2,7 +2,7 @@
 
 > The reference for developing tools for the MischiefBox platform on TheBarracks.
 > Companion to `Project - DevBox\plan.md` (roadmap) and `ai-notes` (pitfalls).
-> Status: V0.7 (CLI + typed I/O + API + capabilities + discovery + pipelines + MCP).
+> Status: V0.8 (CLI + typed I/O + API + capabilities + discovery + pipelines + MCP + run history).
 
 ## 1. Platform model
 
@@ -473,44 +473,46 @@ cp /root/.ssh/id_ed25519 /tmp/.ssh/id_ed25519
 chmod 600 /tmp/.ssh/id_ed25519
 ```
 
-## 13. Run history logging (V0.8 — planned)
+## 13. Run history logging (V0.8)
 
-MischiefBox currently has **no persistent run history**. Tool containers are ephemeral
-(`--rm`) and their stdout/stderr is lost after execution. The API service only logs
-its startup message.
+MischiefBox now logs all tool runs to a persistent history file.
 
-### 13.1 Current state
+### 13.1 Log file
 
-- Tool runs: stdout/stderr → terminal/API response → gone
-- API service: logs startup to `api.log` and systemd journal
-- No record of what tools were run, when, or with what parameters
+- **Location:** `~/mischiefbox/runs.log` (append-only, JSONL format)
+- **Created automatically** on first run
+- **Each entry:**
+  ```json
+  {
+    "ts": "2026-08-20T14:30:00-0300",
+    "tool": "open-notepad",
+    "args": ["--new"],
+    "exit_code": 0,
+    "stdout_preview": "...",
+    "stderr_preview": "...",
+    "duration_ms": 1234,
+    "source": "cli|api"
+  }
+  ```
 
-### 13.2 Proposed solution
+### 13.2 CLI command
 
-Add run history logging at the **CLI/API layer** (not in individual tools):
+```bash
+mischiefbox history                    # show last 20 runs
+mischiefbox history --tool net-check   # filter by tool
+mischiefbox history --last 5           # show last 5 runs
+```
 
-1. **Log file:** `~/mischiefbox/runs.log` (append-only, JSONL format)
-2. **Each entry:**
-   ```json
-   {
-     "ts": "2026-08-20T14:30:00-03:00",
-     "tool": "open-notepad",
-     "args": ["--new"],
-     "exit_code": 0,
-     "stdout_preview": "...",
-     "stderr_preview": "...",
-     "duration_ms": 1234,
-     "source": "cli|api|mcp"
-   }
-   ```
-3. **CLI integration:** `mischiefbox run <tool>` appends to `runs.log` after execution
-4. **API integration:** `POST /tools/{name}/run` appends to `runs.log`
-5. **New command:** `mischiefbox history [--tool <name>] [--last <n>]` to view recent runs
-6. **API endpoint:** `GET /history?tool=<name>&last=<n>` for remote access
+### 13.3 API endpoint
 
-### 13.3 Implementation notes
+```
+GET /history?tool=<name>&last=<n>
+```
 
-- Log before docker run (with `running` state) and after (with result)
-- Rotate logs at 10MB (keep last 5 files)
-- Sensitive args (tokens, passwords) should be redacted in logs
-- Consider adding `--no-log` flag for privacy-sensitive runs
+Returns JSON array of run entries, most recent first.
+
+### 13.4 Security
+
+- Sensitive args (tokens, passwords, keys) are automatically redacted in logs
+- stdout/stderr previews limited to 500 chars to keep log size manageable
+- Source field tracks whether run came from CLI or API
