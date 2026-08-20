@@ -472,3 +472,45 @@ chmod 600 /root/.ssh/id_ed25519  # Permission denied
 cp /root/.ssh/id_ed25519 /tmp/.ssh/id_ed25519
 chmod 600 /tmp/.ssh/id_ed25519
 ```
+
+## 13. Run history logging (V0.8 — planned)
+
+MischiefBox currently has **no persistent run history**. Tool containers are ephemeral
+(`--rm`) and their stdout/stderr is lost after execution. The API service only logs
+its startup message.
+
+### 13.1 Current state
+
+- Tool runs: stdout/stderr → terminal/API response → gone
+- API service: logs startup to `api.log` and systemd journal
+- No record of what tools were run, when, or with what parameters
+
+### 13.2 Proposed solution
+
+Add run history logging at the **CLI/API layer** (not in individual tools):
+
+1. **Log file:** `~/mischiefbox/runs.log` (append-only, JSONL format)
+2. **Each entry:**
+   ```json
+   {
+     "ts": "2026-08-20T14:30:00-03:00",
+     "tool": "open-notepad",
+     "args": ["--new"],
+     "exit_code": 0,
+     "stdout_preview": "...",
+     "stderr_preview": "...",
+     "duration_ms": 1234,
+     "source": "cli|api|mcp"
+   }
+   ```
+3. **CLI integration:** `mischiefbox run <tool>` appends to `runs.log` after execution
+4. **API integration:** `POST /tools/{name}/run` appends to `runs.log`
+5. **New command:** `mischiefbox history [--tool <name>] [--last <n>]` to view recent runs
+6. **API endpoint:** `GET /history?tool=<name>&last=<n>` for remote access
+
+### 13.3 Implementation notes
+
+- Log before docker run (with `running` state) and after (with result)
+- Rotate logs at 10MB (keep last 5 files)
+- Sensitive args (tokens, passwords) should be redacted in logs
+- Consider adding `--no-log` flag for privacy-sensitive runs
