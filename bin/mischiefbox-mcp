@@ -42,6 +42,12 @@ _RESOURCES = {
         "description": "The tool-authoring contract: tool.toml manifest schema, "
                        "Docker conventions, [runtime]/[capabilities], publish+refresh workflow",
     },
+    "mischiefbox://docs/opencode-mcp-setup": {
+        "name": "opencode-mcp-setup.md",
+        "path": "opencode-mcp-setup.md",
+        "mimeType": "text/markdown",
+        "description": "How to connect MischiefBox tools to OpenCode via MCP",
+    },
 }
 
 

@@ -1,0 +1,27 @@
+[meta]
+name = "odoo-ref"
+version = "0.1.0"
+description = "Search Odoo 19.0/SaaS source code for models, fields, views, and patterns"
+
+[run]
+image = "mischiefbox/odoo-ref:0.1.0"
+command = ["/usr/local/bin/odoo-ref.sh"]
+
+[run.inputs]
+query = { type = "string", env = "QUERY", flag = "--query", required = true, description = "Search text (plain text, case-insensitive)" }
+source = { type = "enum", values = ["community", "enterprise", "saas", "all"], env = "SOURCE", flag = "--source", default = "all", description = "Which source tree to search" }
+module = { type = "string", env = "MODULE", flag = "--module", description = "Filter to specific module (e.g. 'sale', 'account', 'pos')" }
+limit = { type = "int", env = "LIMIT", flag = "--limit", default = 30, description = "Max number of files to return matches from" }
+
+[run.outputs]
+format = "json"
+
+[runtime]
+network = "none"
+privileged = false
+mounts = ["/c/Odoo:/odoo:ro"]
+
+[capabilities]
+network = "none"
+privileged = false
+mounts = ["/c/Odoo"]
