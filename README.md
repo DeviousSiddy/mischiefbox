@@ -270,6 +270,38 @@ Add to your MCP server config:
 }
 ```
 
+#### OpenCode Configuration
+
+OpenCode uses a different config format. Add to `~/.config/opencode/opencode.json`:
+
+**Native Linux:**
+```json
+{
+  "mcp": {
+    "mischiefbox": {
+      "type": "local",
+      "command": ["/usr/local/bin/mb-mcp"],
+      "enabled": true
+    }
+  }
+}
+```
+
+**WSL2:**
+```json
+{
+  "mcp": {
+    "mischiefbox": {
+      "type": "local",
+      "command": ["wsl", "bash", "-c", "/opt/mischiefbox/bin/mischiefbox-mcp"],
+      "enabled": true
+    }
+  }
+}
+```
+
+If tools don't appear after restart, add `"tools": { "mischiefbox_*": true }` to the config. See [docs/opencode-mcp-setup.md](docs/opencode-mcp-setup.md) for the full guide.
+
 #### What the MCP provides
 
 Once connected, the AI assistant can:
