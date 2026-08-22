@@ -5,7 +5,7 @@ description = "Test internet download speed"
 
 [run]
 image = "TheBarracks:3010/mischiefbox/speed-test:0.1.0"
-command = ["/usr/local/bin/speed-test.sh"]
+command = []
 
 [run.inputs]
 size = { type = "int", flag = "--size", default = 10, description = "Download size in MB" }

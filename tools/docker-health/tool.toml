@@ -5,7 +5,7 @@ description = "Show Docker container status and resource usage"
 
 [run]
 image = "TheBarracks:3010/mischiefbox/docker-health:0.1.0"
-command = ["/usr/local/bin/docker-health.sh"]
+command = []
 
 [run.inputs]
 filter = { type = "string", flag = "--filter", default = "", description = "Filter containers by name" }

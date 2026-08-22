@@ -5,7 +5,7 @@ description = "Test if a TCP port is open on a host"
 
 [run]
 image = "TheBarracks:3010/mischiefbox/port-check:0.1.0"
-command = ["/usr/local/bin/port-check.sh"]
+command = []
 
 [run.inputs]
 host = { type = "string", flag = "--host", required = true, description = "Target host to check" }

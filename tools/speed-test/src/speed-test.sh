@@ -26,21 +26,12 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-# Test URL
 TEST_URL="${SERVER}/${SIZE_MB}MB.zip"
 
-# Measure download speed
-START=$(date +%s%N)
-curl -s -o /dev/null -w "%{speed_download}" "$TEST_URL" 2>/dev/null
-END=$(date +%s%N)
-
-# Get speed from curl (bytes per second)
 SPEED_BPS=$(curl -s -o /dev/null -w "%{speed_download}" "$TEST_URL" 2>/dev/null)
 
-# Convert to Mbps
 SPEED_MBPS=$(echo "scale=2; $SPEED_BPS * 8 / 1000000" | bc 2>/dev/null || echo "0")
 
-# Also get latency to the server
 LATENCY_MS=$(curl -s -o /dev/null -w "%{time_starttransfer}" --connect-timeout 5 "$SERVER" 2>/dev/null | awk '{printf "%.0f", $1 * 1000}' || echo "0")
 
 echo "{"

@@ -5,11 +5,11 @@ description = "Check systemd service status (local or remote)"
 
 [run]
 image = "TheBarracks:3010/mischiefbox/service-status:0.1.0"
-command = ["/usr/local/bin/service-status.sh"]
+command = []
 
 [run.inputs]
 service = { type = "string", flag = "--service", required = true, description = "Service name to check" }
-host = { type = "string", flag = "--host", default = "", description = "SSH host for remote check" }
+host = { type = "string", flag = "--host", required = false, description = "SSH host for remote check (omit for local)" }
 ssh-user = { type = "string", flag = "--ssh-user", default = "root", description = "SSH user for remote" }
 ssh-key = { type = "string", flag = "--ssh-key", default = "", description = "Path to SSH key" }
 

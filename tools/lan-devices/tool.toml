@@ -5,7 +5,7 @@ description = "Scan LAN for active devices"
 
 [run]
 image = "TheBarracks:3010/mischiefbox/lan-devices:0.1.0"
-command = ["/usr/local/bin/lan-devices.sh"]
+command = []
 
 [run.inputs]
 subnet = { type = "string", flag = "--subnet", default = "192.168.100.0/24", description = "Subnet to scan (CIDR)" }

@@ -44,7 +44,7 @@ for i in $(seq 1 254); do
   # Quick ping with short timeout
   if ping -c 1 -W "$TIMEOUT" "$IP" >/dev/null 2>&1; then
     # Try to get MAC from ARP table
-    MAC=$(arp -n "$IP" 2>/dev/null | awk '/ether/ {print $3}' || echo "")
+    MAC=$(ip neigh show "$IP" 2>/dev/null | awk '/lladdr/ {print $5}' || echo "")
     # Try to get hostname
     HOSTNAME=$(getent hosts "$IP" 2>/dev/null | awk '{print $2}' || echo "")
 

@@ -29,7 +29,7 @@ usage() {
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --service) SERVICE="$2"; shift 2 ;;
-    --host) HOST="$2"; LOCAL=false; shift 2 ;;
+    --host) HOST="$2"; shift 2 ;;
     --ssh-user) SSH_USER="$2"; shift 2 ;;
     --ssh-key) SSH_KEY="$2"; shift 2 ;;
     --help) usage ;;
@@ -40,6 +40,10 @@ done
 if [ -z "$SERVICE" ]; then
   echo '{"error": "--service is required"}'
   exit 1
+fi
+
+if [ -n "$HOST" ]; then
+  LOCAL=false
 fi
 
 # Build SSH command if remote
