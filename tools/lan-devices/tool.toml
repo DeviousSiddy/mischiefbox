@@ -1,0 +1,22 @@
+[meta]
+name = "lan-devices"
+version = "0.1.0"
+description = "Scan LAN for active devices"
+
+[run]
+image = "TheBarracks:3010/mischiefbox/lan-devices:0.1.0"
+command = ["/usr/local/bin/lan-devices.sh"]
+
+[run.inputs]
+subnet = { type = "string", flag = "--subnet", default = "192.168.100.0/24", description = "Subnet to scan (CIDR)" }
+timeout = { type = "int", flag = "--timeout", default = 2, description = "Ping timeout in seconds" }
+
+[run.outputs]
+format = "json"
+fields = { subnet = "string", devices = "array" }
+
+[runtime]
+network = "host"
+
+[capabilities]
+network = "host"

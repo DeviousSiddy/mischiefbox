@@ -3,7 +3,6 @@
 *.log
 
 # Runtime directories
-tools/
 secrets/
 .ssh/
 pipelines/*

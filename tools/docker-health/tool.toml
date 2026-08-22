@@ -1,0 +1,26 @@
+[meta]
+name = "docker-health"
+version = "0.1.0"
+description = "Show Docker container status and resource usage"
+
+[run]
+image = "TheBarracks:3010/mischiefbox/docker-health:0.1.0"
+command = ["/usr/local/bin/docker-health.sh"]
+
+[run.inputs]
+filter = { type = "string", flag = "--filter", default = "", description = "Filter containers by name" }
+all = { type = "bool", flag = "--all", default = false, description = "Show all containers including stopped" }
+
+[run.outputs]
+format = "json"
+fields = { containers = "array" }
+
+[runtime]
+network = "none"
+privileged = false
+mounts = ["/var/run/docker.sock:/var/run/docker.sock:ro"]
+
+[capabilities]
+network = "none"
+privileged = false
+mounts = ["/var/run/docker.sock"]

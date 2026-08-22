@@ -1,0 +1,22 @@
+[meta]
+name = "speed-test"
+version = "0.1.0"
+description = "Test internet download speed"
+
+[run]
+image = "TheBarracks:3010/mischiefbox/speed-test:0.1.0"
+command = ["/usr/local/bin/speed-test.sh"]
+
+[run.inputs]
+size = { type = "int", flag = "--size", default = 10, description = "Download size in MB" }
+server = { type = "string", flag = "--server", default = "http://speedtest.tele2.net", description = "Test server URL" }
+
+[run.outputs]
+format = "json"
+fields = { download_mbps = "float", download_bytes_per_sec = "float", test_size_mb = "int", server = "string", latency_ms = "int" }
+
+[runtime]
+network = "host"
+
+[capabilities]
+network = "host"

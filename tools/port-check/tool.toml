@@ -1,0 +1,23 @@
+[meta]
+name = "port-check"
+version = "0.1.0"
+description = "Test if a TCP port is open on a host"
+
+[run]
+image = "TheBarracks:3010/mischiefbox/port-check:0.1.0"
+command = ["/usr/local/bin/port-check.sh"]
+
+[run.inputs]
+host = { type = "string", flag = "--host", required = true, description = "Target host to check" }
+port = { type = "int", flag = "--port", required = true, description = "Target port number" }
+timeout = { type = "int", flag = "--timeout", default = 3, description = "Connection timeout in seconds" }
+
+[run.outputs]
+format = "json"
+fields = { host = "string", port = "int", open = "bool", latency_ms = "int" }
+
+[runtime]
+network = "host"
+
+[capabilities]
+network = "host"
